@@ -1,0 +1,31 @@
+display_information:
+  name: Alarm Control App
+  description: An app to control alarms via AWS Lambda
+  background_color: "#36C5F0"
+
+features:
+  bot_user:
+    display_name: AlarmBot
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write           # Allows the bot to post messages to a channel
+      - commands             # Allows the app to use slash commands
+      - app_mentions:read    # Allows the app to read messages where it's mentioned
+      - incoming-webhook     # Allows the app to receive messages via webhooks
+
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://your-api-gateway-url/interactivity
+
+  event_subscriptions:
+    request_url: https://your-api-gateway-url/handle-slack-events
+    bot_events:
+      - app_mention          # To listen for mentions of the app
+
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

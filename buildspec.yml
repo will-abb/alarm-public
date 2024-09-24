@@ -1,0 +1,13 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+      - echo "Validating CloudFormation template"
+      - aws cloudformation validate-template --template-body file://template.yaml
+      - echo "Building and packaging the Lambda function"
+      - zip function.zip index.py
+artifacts:
+  files:
+    - function.zip
+    - template.yaml

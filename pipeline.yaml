@@ -1,0 +1,198 @@
+Parameters:
+  BranchName:
+    Description: CodeCommit branch name
+    Type: String
+    Default: develop
+
+  ResourcePrefix:
+    Description: prefix for naming resources, using repo name is recommended.
+    Type: String
+    Default: alarm
+
+  ResourcePrefixUppercase:
+    Description: prefix for naming resources, using repo name is recommended.
+    Type: String
+    Default: Alarm
+
+Resources:
+  PipelineBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ResourcePrefix}-pipeline-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: "DeleteOldObjects"
+            Status: "Enabled"
+            ExpirationInDays: 7
+            Prefix: ""
+
+  PipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "AWSCodePipeline${ResourcePrefixUppercase}ServiceRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "AWSCodeBuild${ResourcePrefixUppercase}ServiceRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "AWSCodeDeploy${ResourcePrefixUppercase}ServiceRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codedeploy.amazonaws.com
+                - cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${ResourcePrefix}-pipeline"
+      RoleArn: !GetAtt PipelineServiceRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              Configuration:
+                RepositoryName: !Ref ResourcePrefix
+                BranchName: !Ref BranchName
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref ResourcePrefix
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                StackName: !Sub "${ResourcePrefix}-application"
+                TemplatePath: BuildOutput::template.yaml
+                Capabilities: CAPABILITY_NAMED_IAM
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !GetAtt CodeDeployServiceRole.Arn
+                ChangeSetName: !Sub "${ResourcePrefix}-ChangeSet"
+              InputArtifacts:
+                - Name: BuildOutput
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineBucket
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref ResourcePrefix
+      Artifacts:
+        Type: S3
+        Location: !Ref PipelineBucket
+        Name: build-artifacts
+        Packaging: ZIP
+      Source:
+        Type: CODECOMMIT
+        Location: !Ref ResourcePrefix
+        BuildSpec: 'buildspec.yml'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: false
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+        S3Logs:
+          Status: DISABLED
+      EncryptionKey: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"
+      TimeoutInMinutes: 15
+      QueuedTimeoutInMinutes: 300
+      Tags: []
+
+  EventBridgeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "EventBridge${ResourcePrefixUppercase}PipelineExecutionRoleName"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "EventBridge${ResourcePrefixUppercase}PipelineExecutionPolicyName"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'codepipeline:StartPipelineExecution'
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}-pipeline'
+
+  EventBridgeRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref BranchName
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}-pipeline'
+          RoleArn: !GetAtt EventBridgeExecutionRole.Arn
+          Id: AlarmPipelineTrigger

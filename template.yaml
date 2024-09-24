@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFormation template for setting up SES receipt rules to trigger a Lambda function upon receiving an email.
+
+Resources:
+  # SES Receipt Rule Set
+  SESReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: "WilliSeedReceiptRuleSet"
+
+  # SES Receipt Rule
+  SESReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    Properties:
+      RuleSetName: !Ref SESReceiptRuleSet
+      Rule:
+        Name: "ForwardToLambda"
+        Enabled: true
+        Recipients:
+          - "alert@williseed.com"
+        Actions:
+          - LambdaAction:
+              FunctionArn: !GetAtt HomeAlarmLambdaFunction.Arn
+              InvocationType: Event
+        ScanEnabled: false
+
+  # Lambda Function to Process the Email
+  HomeAlarmLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.10
+      Code: 
+        ZipFile: |
+          import json
+          import boto3
+
+          def handler(event, context):
+              # Process the incoming email
+              email_message = event['Records'][0]['ses']['mail']['commonHeaders']
+              subject = email_message['subject']
+              from_address = email_message['from'][0]
+
+              # Logic to process the email
+              print(f"Email received from {from_address} with subject {subject}")
+
+              # Example response
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Email processed successfully')
+              }
+      Role: !GetAtt HomeAlarmLambdaExecutionRole.Arn
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          EMAIL_RECIPIENT: "williamsbosch@yahoo.com"
+
+  # IAM Role for Lambda with permissions for SES and CloudWatch Logs
+  HomeAlarmLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaSESProcessingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ses:SendRawEmail"
+                  - "ses:ReceiveEmail"
+                  - "ses:ListReceiptRules"
+                  - "ses:DescribeReceiptRuleSet"
+                  - "lambda:InvokeFunction"
+                Resource: "*"
+
+  # Add Lambda permissions for SES to invoke the Lambda function
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref HomeAlarmLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: ses.amazonaws.com
+
+  # MX Record for SES Email Receiving
+  SESMXRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "williseed.com."
+      Name: "williseed.com."
+      Type: MX
+      TTL: 300
+      ResourceRecords:
+        - "10 inbound-smtp.us-east-1.amazonaws.com" # Replace with your actual SES region if different
+
+Outputs:
+  HomeAlarmLambdaFunctionArn:
+    Description: "The ARN of the Lambda function"
+    Value: !GetAtt HomeAlarmLambdaFunction.Arn
+
+  SESReceiptRuleSetName:
+    Description: "The SES receipt rule set name"
+    Value: !Ref SESReceiptRuleSet
